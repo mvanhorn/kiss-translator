@@ -1,4 +1,4 @@
-import { css, keyframes } from "@emotion/css";
+import createEmotion from "@emotion/css/create-instance";
 import {
   OPT_STYLE_NONE,
   OPT_STYLE_LINE,
@@ -21,35 +21,40 @@ import {
   OPT_STYLE_WAVYLINE_BOLD,
 } from "../config";
 
-const gradientFlow = keyframes`
-  to {
-    background-position: 200% center;
-  }
-`;
+const TEXT_STYLE_KEY = "kiss-text";
 
-const blink = keyframes`
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-`;
+const textEmotion = createEmotion({ key: TEXT_STYLE_KEY });
+const { css, keyframes, sheet: textSheet } = textEmotion;
 
-const glow = keyframes`
-  from {
-    text-shadow: 0 0 10px #fff, 
-    0 0 20px #fff, 
-    0 0 30px #0073e6, 
-    0 0 40px #0073e6;
-  }
-  to {
-    text-shadow: 0 0 20px #fff, 
-    0 0 30px #ff4da6, 
-    0 0 40px #ff4da6, 
-    0 0 50px #ff4da6;
-  }
-`;
+const createTextAnimations = () => ({
+  gradientFlow: keyframes`
+    to {
+      background-position: 200% center;
+    }
+  `,
+  blink: keyframes`
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0;
+    }
+  `,
+  glow: keyframes`
+    from {
+      text-shadow: 0 0 10px #fff, 
+      0 0 20px #fff, 
+      0 0 30px #0073e6, 
+      0 0 40px #0073e6;
+    }
+    to {
+      text-shadow: 0 0 20px #fff, 
+      0 0 30px #ff4da6, 
+      0 0 40px #ff4da6, 
+      0 0 50px #ff4da6;
+    }
+  `,
+});
 
 const genLineStyle = (style, color, thickness = 1) => `
   text-decoration-line: underline;
@@ -71,7 +76,10 @@ const genLineStyle = (style, color, thickness = 1) => `
   }
 `;
 
-const genBuiltinStyles = (color = DEFAULT_COLOR) => ({
+const genBuiltinStyles = (
+  color = DEFAULT_COLOR,
+  animations = createTextAnimations()
+) => ({
   // 无样式
   [OPT_STYLE_NONE]: ``,
   // 下划线
@@ -148,18 +156,18 @@ const genBuiltinStyles = (color = DEFAULT_COLOR) => ({
     color: transparent;
     -webkit-background-clip: text;
     background-clip: text;
-    animation: ${gradientFlow} 4s linear infinite;
+    animation: ${animations.gradientFlow} 4s linear infinite;
     & * {
       background-color: transparent !important;
     }
   `,
   // 闪现
   [OPT_STYLE_BLINK]: `
-    animation: ${blink} 1s infinite;
+    animation: ${animations.blink} 1s infinite;
   `,
   // 发光
   [OPT_STYLE_GLOW]: `
-    animation: ${glow} 2s ease-in-out infinite alternate;
+    animation: ${animations.glow} 2s ease-in-out infinite alternate;
   `,
   // 多彩
   [OPT_STYLE_COLORFUL]: `
@@ -178,18 +186,81 @@ const genBuiltinStyles = (color = DEFAULT_COLOR) => ({
   `,
 });
 
-/**
- * 根据内置样式和用户自定义样式，生成唯一的 CSS Class 类名映射与全局样式表字符串
- * // REVIEW: 样式生成冗余与潜在冲突风险。
- * // 在 `genTextClass` 中，直接调用了 `@emotion/css` 的 `css` 方法。
- * // 这一步会将生成的样式规则自动同步插入到当前宿主文档的全局 `<style>` 标签中。
- * // 随后，代码又遍历了一遍样式拼装为 `textStyles` 字符串，并在 `translator.js` 中放入 `adoptedStyleSheets` 中挂载。
- * // 这样会在同一页面产生双重样式渲染（一次在顶层文档，一次在 Shadow DOM 内部），产生了内存和渲染性能冗余，
- * // 且如果 `@emotion/css` 被运行在限制了 CSP 或者隔离的 Shadow 环境下，可能会由于无法直接操作全局 document 的头部导致运行期报错。
- * @param {Array} customStyles - 用户自定义样式表
- * @returns {Array} [textClass, textStyles] 返回 Class 映射字典及完整样式表字符串
- */
-export const genTextClass = (customStyles = []) => {
+let lastCustomStyles = [];
+let hasGeneratedTextClass = false;
+let recoveringTextStyles = false;
+
+const getLiveHead = () => {
+  try {
+    const head = document.head;
+    return head && head.isConnected ? head : null;
+  } catch {
+    return null;
+  }
+};
+
+const bindOwnedSheetContainer = () => {
+  const head = getLiveHead();
+  if (head) {
+    textSheet.container = head;
+    return head;
+  }
+
+  const root = document.documentElement;
+  if (root?.isConnected) {
+    textSheet.container = root;
+    return root;
+  }
+
+  return null;
+};
+
+export const isOwnedTextStyleElement = (node) => {
+  if (!node || node.nodeName !== "STYLE") return false;
+  const value = node.getAttribute?.("data-emotion");
+  if (typeof value !== "string") return false;
+  return value === TEXT_STYLE_KEY || value.startsWith(`${TEXT_STYLE_KEY} `);
+};
+
+const styleTagHasRules = (tag) => {
+  if (!tag) return false;
+  const text = tag.textContent;
+  if (typeof text === "string" && text.trim()) return true;
+  try {
+    return Boolean(tag.sheet?.cssRules?.length);
+  } catch {
+    return false;
+  }
+};
+
+const collectOwnedStyleElements = () => {
+  const owned = [];
+  const seen = new Set();
+  const add = (node) => {
+    if (!node || seen.has(node) || !isOwnedTextStyleElement(node)) return;
+    seen.add(node);
+    owned.push(node);
+  };
+
+  try {
+    document.querySelectorAll("style[data-emotion]").forEach(add);
+  } catch {
+    // 文档可能正在替换 head
+  }
+  textSheet.tags.forEach(add);
+  return owned;
+};
+
+const areOwnedStylesAttached = () => {
+  const head = getLiveHead();
+  const tags = textSheet.tags;
+  if (!head || !tags.length || textSheet.container !== head) return false;
+  return tags.every(
+    (tag) => tag.isConnected && head.contains(tag) && styleTagHasRules(tag)
+  );
+};
+
+const buildTextClass = (customStyles = []) => {
   const styles = genBuiltinStyles();
   customStyles.forEach((style) => {
     styles[style.styleSlug] = style.styleCode;
@@ -210,6 +281,57 @@ export const genTextClass = (customStyles = []) => {
     `;
   });
   return [textClass, textStyles];
+};
+
+const replayOwnedStyles = () => {
+  const host = bindOwnedSheetContainer();
+  if (!host) return;
+
+  collectOwnedStyleElements().forEach((tag) => {
+    tag.parentNode?.removeChild(tag);
+  });
+  textEmotion.flush();
+  bindOwnedSheetContainer();
+  if (hasGeneratedTextClass) {
+    buildTextClass(lastCustomStyles);
+  } else {
+    createTextAnimations();
+  }
+};
+
+/**
+ * 根据内置样式和用户自定义样式，生成唯一的 CSS Class 类名映射与全局样式表字符串
+ * 译文样式使用独立的 Emotion 实例写入文档，避免与 UI 缓存互相污染。
+ * 导航或 head 替换导致样式节点丢失时，可通过 recoverTextStyles 按已生成规则重放 CSS，
+ * 并保持原有 class 名不变。Shadow DOM 仍使用返回的 textStyles 字符串注入。
+ * @param {Array} customStyles - 用户自定义样式表
+ * @returns {Array} [textClass, textStyles] 返回 Class 映射字典及完整样式表字符串
+ */
+export const genTextClass = (customStyles = []) => {
+  lastCustomStyles = Array.isArray(customStyles) ? customStyles.slice() : [];
+  hasGeneratedTextClass = true;
+  recoverTextStyles();
+  bindOwnedSheetContainer();
+  return buildTextClass(lastCustomStyles);
+};
+
+/**
+ * 当译文样式宿主被卸下或规则丢失时，把已生成的 CSS（含嵌套选择器与 keyframes）重放到当前 head。
+ * 不清理共享 UI Emotion 缓存，也不改变已经发给 Translator 的 class 名。
+ */
+export const recoverTextStyles = () => {
+  if (recoveringTextStyles) return;
+  recoveringTextStyles = true;
+  try {
+    const head = getLiveHead();
+    if (!head) return;
+    if (areOwnedStylesAttached()) return;
+    replayOwnedStyles();
+  } catch {
+    // head 可能在导航过程中暂时不存在，稍后由观察者再次恢复
+  } finally {
+    recoveringTextStyles = false;
+  }
 };
 
 export const builtinStylesMap = genBuiltinStyles();

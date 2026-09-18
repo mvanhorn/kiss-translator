@@ -19,17 +19,88 @@ const {
   EVENT_FAVORITE_WORD_CHANGE,
   OPT_DICT_BING,
   OPT_DICT_YOUDAO,
+  OPT_STYLE_BLINK,
+  OPT_STYLE_FUZZY,
+  OPT_STYLE_HIGHLIGHT,
 } = require("../config");
 const {
   OPT_HIGHLIGHT_WORDS_AFTERTRANS,
   OPT_HIGHLIGHT_WORDS_BEFORETRANS,
 } = require("../config/rules");
 const { Translator } = require("./translator");
+const { isOwnedTextStyleElement, recoverTextStyles } = require("./style");
 
 const flushAsync = async () => {
   jest.runOnlyPendingTimers();
   await Promise.resolve();
   await Promise.resolve();
+};
+
+const flushStyleRecovery = async ({ recover = true } = {}) => {
+  await Promise.resolve();
+  await Promise.resolve();
+  jest.runOnlyPendingTimers();
+  await Promise.resolve();
+  await Promise.resolve();
+  if (recover) recoverTextStyles();
+};
+
+const ownedStyleElements = (root = document) =>
+  [...(root.querySelectorAll?.("style") || [])].filter(isOwnedTextStyleElement);
+
+const attachedCssText = () => {
+  const parts = [];
+  for (const el of document.querySelectorAll("style")) {
+    if (!el.isConnected) continue;
+    if (el.textContent?.trim()) parts.push(el.textContent);
+    try {
+      for (const rule of el.sheet?.cssRules || []) {
+        parts.push(rule.cssText);
+      }
+    } catch {
+      // jsdom may deny cssRules on detached or empty sheets
+    }
+  }
+  return parts.join("\n");
+};
+
+const cssForClass = (className) => {
+  if (!className) return "";
+  return attachedCssText()
+    .split("}")
+    .filter((chunk) => chunk.includes(className))
+    .join("}");
+};
+
+const translationStyleClass = (root = document) => {
+  const inner = root.querySelector(`.${Translator.KISS_CLASS.inner}`);
+  if (!inner) return "";
+  return (
+    [...inner.classList].find(
+      (className) => className !== Translator.KISS_CLASS.inner
+    ) || ""
+  );
+};
+
+const originalStyleClass = (root = document) => {
+  const original = root.querySelector(`.${Translator.KISS_CLASS.original}`);
+  if (!original) return "";
+  return (
+    [...original.classList].find(
+      (className) => className !== Translator.KISS_CLASS.original
+    ) || ""
+  );
+};
+
+const replaceDocumentHead = () => {
+  const nextHead = document.createElement("head");
+  const currentHead = document.head;
+  if (currentHead) {
+    document.documentElement.replaceChild(nextHead, currentHead);
+  } else {
+    document.documentElement.insertBefore(nextHead, document.body);
+  }
+  return nextHead;
 };
 
 const createdTranslators = [];
@@ -2311,6 +2382,197 @@ describe("Translator rule styles", () => {
     expect(style.id).toBe("kiss-translator-fallback-style");
     expect(style.textContent.length).toBeGreaterThan(0);
     expect(shadowRoot.querySelectorAll("style")).toHaveLength(1);
+  });
+
+  describe("translation style recovery after navigation", () => {
+    test("restores attached translation CSS after owned style tags are removed", async () => {
+      document.body.innerHTML =
+        '<main id="root"><p id="target">Hello highlight style</p></main>';
+      const siteStyle = document.createElement("style");
+      siteStyle.setAttribute("data-site-style", "keep");
+      siteStyle.textContent = ".site-keep { color: black; }";
+      document.head.appendChild(siteStyle);
+
+      const translator = createTranslator(
+        { textStyle: OPT_STYLE_HIGHLIGHT },
+        { minLength: 0 }
+      );
+      await flushStyleRecovery();
+
+      const styleClass = translationStyleClass();
+      expect(styleClass).toBeTruthy();
+      expect(cssForClass(styleClass)).toMatch(/background-color/i);
+      const requestCount = apiTranslate.mock.calls.length;
+      const initialOwned = ownedStyleElements().length;
+
+      ownedStyleElements().forEach((tag) => tag.remove());
+      expect(cssForClass(styleClass)).toBe("");
+
+      await flushStyleRecovery();
+
+      expect(cssForClass(styleClass)).toMatch(/background-color/i);
+      expect(document.querySelector(".kiss-translator-inner")).not.toBeNull();
+      expect(apiTranslate).toHaveBeenCalledTimes(requestCount);
+      expect(ownedStyleElements()).toHaveLength(initialOwned);
+      expect(document.querySelector("style[data-site-style='keep']")).toBe(
+        siteStyle
+      );
+
+      document.head.appendChild(document.createElement("meta"));
+      await flushStyleRecovery();
+      expect(ownedStyleElements()).toHaveLength(initialOwned);
+      translator.stop();
+    });
+
+    test("recovers styles after head replacement, rescan, and reconstruction", async () => {
+      document.body.innerHTML =
+        '<main id="root"><p id="first">First styled paragraph</p></main>';
+      const translator = createTranslator(
+        { textStyle: OPT_STYLE_HIGHLIGHT },
+        { minLength: 0 }
+      );
+      await flushStyleRecovery();
+
+      const firstClass = translationStyleClass();
+      expect(cssForClass(firstClass)).toMatch(/background-color/i);
+      const initialOwned = ownedStyleElements().length;
+
+      replaceDocumentHead();
+      expect(document.getElementById("first")).not.toBeNull();
+      await flushStyleRecovery();
+
+      expect(cssForClass(firstClass)).toMatch(/background-color/i);
+      expect(ownedStyleElements(document.head).length).toBe(initialOwned);
+
+      const second = document.createElement("p");
+      second.id = "second";
+      second.textContent = "Second styled paragraph";
+      document.getElementById("root").appendChild(second);
+      translator.rescan();
+      await flushStyleRecovery();
+
+      const secondClass = translationStyleClass(second);
+      expect(secondClass).toBe(firstClass);
+      expect(cssForClass(secondClass)).toMatch(/background-color/i);
+      expect(ownedStyleElements(document.head)).toHaveLength(initialOwned);
+
+      translator.stop();
+      const rebuilt = createTranslator(
+        { textStyle: OPT_STYLE_HIGHLIGHT },
+        { minLength: 0 }
+      );
+      await flushStyleRecovery();
+      expect(cssForClass(translationStyleClass())).toMatch(/background-color/i);
+      expect(ownedStyleElements(document.head).length).toBeGreaterThan(0);
+      rebuilt.stop();
+    });
+
+    test("keeps nested hover rules, keyframes, and original wrapping after recovery", async () => {
+      document.body.innerHTML =
+        '<main id="root"><p id="target">Animated nested original</p></main>';
+      const translator = createTranslator(
+        {
+          textStyle: OPT_STYLE_BLINK,
+          wrapOriginal: "true",
+          originalTextStyle: OPT_STYLE_FUZZY,
+        },
+        {
+          minLength: 0,
+          customStyles: [
+            {
+              styleSlug: "custom_hover",
+              styleName: "Custom Hover",
+              styleCode: `
+                color: blue;
+                &:hover {
+                  color: red;
+                }
+              `,
+            },
+          ],
+        }
+      );
+      await flushStyleRecovery();
+
+      const blinkClass = translationStyleClass();
+      const fuzzyClass = originalStyleClass();
+      expect(blinkClass).toBeTruthy();
+      expect(fuzzyClass).toBeTruthy();
+
+      replaceDocumentHead();
+      await flushStyleRecovery();
+
+      const blinkCss = cssForClass(blinkClass);
+      const animationName = blinkCss.match(
+        /animation(?:-name)?:\s*([A-Za-z0-9_-]+)/i
+      )?.[1];
+      expect(animationName).toBeTruthy();
+      expect(attachedCssText()).toMatch(
+        new RegExp(`@keyframes\\s+${animationName}`)
+      );
+      expect(cssForClass(fuzzyClass)).toMatch(new RegExp(`${fuzzyClass}:hover`));
+      expect(
+        document.querySelector(`.${Translator.KISS_CLASS.original}`)
+      ).not.toBeNull();
+
+      translator.updateRule({ textStyle: "custom_hover" });
+      await flushStyleRecovery();
+      const customClass = translationStyleClass();
+      expect(cssForClass(customClass)).toMatch(
+        new RegExp(`${customClass}:hover`)
+      );
+      translator.stop();
+    });
+
+    test("does not recover after stop, and reconnects after editor resume", async () => {
+      document.body.innerHTML =
+        '<main id="root"><p id="target">Editor style lifecycle</p></main>';
+      const translator = createTranslator(
+        { textStyle: OPT_STYLE_HIGHLIGHT },
+        { minLength: 0 }
+      );
+      await flushStyleRecovery();
+      const styleClass = translationStyleClass();
+      expect(cssForClass(styleClass)).toMatch(/background-color/i);
+
+      const state = translator.beginRuleEditing();
+      ownedStyleElements().forEach((tag) => tag.remove());
+      await flushStyleRecovery({ recover: false });
+      expect(cssForClass(styleClass)).toBe("");
+
+      translator.endRuleEditing(state);
+      await flushStyleRecovery();
+      expect(cssForClass(styleClass)).toMatch(/background-color/i);
+
+      ownedStyleElements().forEach((tag) => tag.remove());
+      await flushStyleRecovery();
+      expect(cssForClass(styleClass)).toMatch(/background-color/i);
+
+      translator.stop();
+      ownedStyleElements().forEach((tag) => tag.remove());
+      await flushStyleRecovery({ recover: false });
+      expect(ownedStyleElements()).toHaveLength(0);
+      expect(cssForClass(styleClass)).toBe("");
+    });
+
+    test("survives a missing head and restores styles when a head returns", async () => {
+      document.body.innerHTML =
+        '<main id="root"><p id="target">Missing head recovery</p></main>';
+      createTranslator({ textStyle: OPT_STYLE_HIGHLIGHT }, { minLength: 0 });
+      await flushStyleRecovery();
+      const styleClass = translationStyleClass();
+      document.head.remove();
+
+      expect(() => recoverTextStyles()).not.toThrow();
+      await flushStyleRecovery({ recover: false });
+
+      const head = document.createElement("head");
+      document.documentElement.insertBefore(head, document.body);
+      await flushStyleRecovery();
+
+      expect(cssForClass(styleClass)).toMatch(/background-color/i);
+      expect(ownedStyleElements(head).length).toBeGreaterThan(0);
+    });
   });
 
   test("removes mouse hover bubble when mouse hover is disabled", async () => {

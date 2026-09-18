@@ -40,7 +40,11 @@ import { parseMathInText } from "./mathParse";
 import { apiMicrosoftDict, apiTranslate, apiYoudaoDict } from "../apis";
 import { kissLog } from "./log";
 import { clearAllBatchQueue } from "./batchQueue";
-import { genTextClass } from "./style";
+import {
+  genTextClass,
+  recoverTextStyles,
+  isOwnedTextStyleElement,
+} from "./style";
 import { createLoadingSVG, createRetrySVG } from "./svg";
 import { shortcutRegister } from "./shortcut";
 import { tryDetectLang } from "./detect";
@@ -512,6 +516,7 @@ export class Translator {
 
   #io; // IntersectionObserver
   #mo; // MutationObserver
+  #textStyleObserver = null; // 监控 head/样式节点丢失并恢复译文 CSS
   #dmm; // DebounceMouseMover
 
   #rescanQueue = new Set(); // “脏容器”队列
@@ -1068,6 +1073,10 @@ export class Translator {
     // 重新初始化意味着规则/DOM 都可能变化，按住翻译的区域单元缓存全部失效
     this.#holdUnitsCache = new WeakMap();
 
+    // 导航可能卸下 head 中的译文样式；先恢复再扫描
+    this.#recoverTextStyles();
+    this.#startObserveTextStyles();
+
     // 注入JS/CSS
     this.#initInjector();
 
@@ -1128,6 +1137,7 @@ export class Translator {
     const [textClass, textStyles] = genTextClass(this.#setting.customStyles);
     this.#textClass = textClass;
     this.#textStylesRaw = textStyles;
+    this.#recoverTextStyles();
 
     try {
       const textSheet = new CSSStyleSheet();
@@ -1138,6 +1148,73 @@ export class Translator {
       // CSSStyleSheet 在当前环境不可用（Firefox 内容脚本等），改用内联 <style>
       this.#useSheetFallback = true;
     }
+  }
+
+  #recoverTextStyles() {
+    recoverTextStyles();
+  }
+
+  #startObserveTextStyles() {
+    this.#stopObserveTextStyles();
+    if (typeof MutationObserver !== "function") return;
+
+    try {
+      this.#textStyleObserver = new MutationObserver((mutations) => {
+        this.#handleTextStyleHostMutations(mutations);
+      });
+      this.#bindTextStyleObserver();
+    } catch (err) {
+      kissLog("observe text styles", err);
+      this.#textStyleObserver = null;
+    }
+  }
+
+  #bindTextStyleObserver() {
+    const observer = this.#textStyleObserver;
+    if (!observer) return;
+
+    try {
+      observer.disconnect();
+      const root = document.documentElement;
+      if (root) {
+        observer.observe(root, { childList: true });
+      }
+      const head = document.head;
+      if (head?.isConnected) {
+        observer.observe(head, { childList: true });
+      }
+    } catch (err) {
+      kissLog("bind text style observer", err);
+    }
+  }
+
+  #handleTextStyleHostMutations(mutations) {
+    let headChanged = false;
+    let ownedRemoved = false;
+
+    for (const mutation of mutations) {
+      if (mutation.type !== "childList") continue;
+
+      mutation.addedNodes.forEach((node) => {
+        if (node.nodeName === "HEAD") headChanged = true;
+      });
+      mutation.removedNodes.forEach((node) => {
+        if (node.nodeName === "HEAD") headChanged = true;
+        if (isOwnedTextStyleElement(node)) ownedRemoved = true;
+      });
+    }
+
+    if (headChanged) {
+      this.#bindTextStyleObserver();
+    }
+    if (headChanged || ownedRemoved) {
+      this.#recoverTextStyles();
+    }
+  }
+
+  #stopObserveTextStyles() {
+    this.#textStyleObserver?.disconnect();
+    this.#textStyleObserver = null;
   }
 
   // 注入样式（优先 adoptedStyleSheets，失败时回退到 <style>）
@@ -4998,6 +5075,7 @@ overflow-wrap: anywhere !important;`;
 
   // 停止运行
   stop({ preserveInjector = false } = {}) {
+    this.#stopObserveTextStyles();
     this.setTouchMode("off");
     document.removeEventListener(
       EVENT_FAVORITE_WORD_CHANGE,
