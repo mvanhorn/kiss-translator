@@ -31,7 +31,9 @@ const {
 const {
   OPT_HIGHLIGHT_WORDS_AFTERTRANS,
   OPT_HIGHLIGHT_WORDS_BEFORETRANS,
+  GLOBLA_RULE,
 } = require("../config/rules");
+const { mergeRules } = require("./rules");
 const { Translator } = require("./translator");
 
 const flushAsync = async () => {
@@ -8094,5 +8096,122 @@ describe("Translator rule styles", () => {
       const inner = document.querySelector(`.${Translator.KISS_CLASS.inner}`);
       expect(inner.textContent).toBe("YX finish line x");
     });
+  });
+
+  test("translates grok.com text when a personal rule removes translate=no", async () => {
+    document.documentElement.setAttribute("translate", "no");
+    const wrapper = `.${Translator.KISS_CLASS.warpper}`;
+    try {
+      document.body.innerHTML = `
+        <main id="root">
+          <p id="talk">Hello from the conversation</p>
+          <p id="reply">Another English message here</p>
+          <p class="notranslate" id="badge">Do not translate this notice</p>
+          <div id="kiss-rule-editor"><p>Rule editor chrome text</p></div>
+          <div class="kiss-subtitle-controls"><p>Subtitle control label</p></div>
+          <div id="editable" contenteditable="true">Editable draft text</div>
+          <script id="page-script">var hiddenScriptText = "secret script";</script>
+          <style id="page-style">.hidden { color: red; }</style>
+          <input id="field" value="secret input" />
+        </main>
+      `;
+      const translator = createTranslator();
+      await flushAsync();
+      expect(document.querySelector(wrapper)).toBeNull();
+      expect(apiTranslate).not.toHaveBeenCalled();
+      expect(translator.rule.autoScan).toBe("true");
+      expect(document.documentElement.getAttribute("translate")).toBe("no");
+
+      const removed = mergeRules(GLOBLA_RULE, {
+        builtinIgnoreSelector: "-[translate='no']",
+      }).builtinIgnoreSelector;
+      translator.updateRule({ builtinIgnoreSelector: removed });
+      await flushAsync();
+      expect(document.querySelector(`#talk ${wrapper}`)).not.toBeNull();
+      expect(document.querySelector(`#reply ${wrapper}`)).not.toBeNull();
+      expect(document.querySelector(`#badge ${wrapper}`)).toBeNull();
+      expect(document.querySelector(`#kiss-rule-editor ${wrapper}`)).toBeNull();
+      expect(
+        document.querySelector(`.kiss-subtitle-controls ${wrapper}`)
+      ).toBeNull();
+      expect(document.querySelector(`#editable ${wrapper}`)).toBeNull();
+      expect(translator.rule.autoScan).toBe("true");
+      const ignore = translator.ruleRangeContext().ignoreSelector;
+      for (const id of ["page-script", "page-style", "field", "badge"]) {
+        expect(document.getElementById(id).matches(ignore)).toBe(true);
+      }
+      expect(document.getElementById("talk").matches(ignore)).toBe(false);
+      expect(document.documentElement.getAttribute("translate")).toBe("no");
+
+      const fresh = document.createElement("p");
+      fresh.id = "fresh";
+      fresh.textContent = "Newly inserted conversation text";
+      document.getElementById("root").appendChild(fresh);
+      await flushMutations();
+      expect(fresh.querySelector(wrapper)).not.toBeNull();
+
+      translator.updateRule({ builtinIgnoreSelector: ":not(*)" });
+      await flushAsync();
+      expect(document.querySelector(`#badge ${wrapper}`)).not.toBeNull();
+      expect(document.querySelector(`#kiss-rule-editor ${wrapper}`)).toBeNull();
+      expect(
+        document.querySelector(`.kiss-subtitle-controls ${wrapper}`)
+      ).toBeNull();
+      expect(document.getElementById("field").value).toBe("secret input");
+
+      translator.updateRule({
+        builtinIgnoreSelector: GLOBLA_RULE.builtinIgnoreSelector,
+      });
+      await flushAsync();
+      expect(document.querySelector(wrapper)).toBeNull();
+      const later = document.createElement("p");
+      later.id = "later";
+      later.textContent = "Text inserted after restoring defaults";
+      document.getElementById("root").appendChild(later);
+      await flushMutations();
+      expect(later.querySelector(wrapper)).toBeNull();
+      expect(document.querySelector(wrapper)).toBeNull();
+      expect(document.documentElement.getAttribute("translate")).toBe("no");
+    } finally {
+      document.documentElement.removeAttribute("translate");
+    }
+  });
+
+  test("keeps manual, scan-all, and plain-text ignores independent of the built-in list", async () => {
+    document.documentElement.setAttribute("translate", "no");
+    const wrapper = `.${Translator.KISS_CLASS.warpper}`;
+    try {
+      document.body.innerHTML =
+        '<main id="root"><p class="notranslate" id="manual">Manual page paragraph</p></main>';
+      const manual = createTranslator({ autoScan: "false", selector: "p" });
+      await flushAsync();
+      expect(document.querySelector(`#manual ${wrapper}`)).not.toBeNull();
+      expect(manual.ruleRangeContext().ignoreSelector).not.toContain(
+        ".notranslate"
+      );
+      manual.stop();
+
+      document.body.innerHTML =
+        '<main id="root"><p id="all">Scan all paragraph text</p></main>';
+      const scanAll = createTranslator({
+        scanAll: "true",
+        builtinIgnoreSelector: "p, [translate='no']",
+      });
+      await flushAsync();
+      expect(document.querySelector(`#all ${wrapper}`)).not.toBeNull();
+      expect(scanAll.ruleRangeContext().ignoreSelector).toBe(
+        Translator.KISS_IGNORE_SELECTOR
+      );
+      scanAll.stop();
+
+      const plain = createPlainTextTranslator({
+        builtinIgnoreSelector: "p, [translate='no']",
+      });
+      expect(plain.ruleRangeContext().ignoreSelector).toBe(
+        Translator.KISS_IGNORE_SELECTOR
+      );
+    } finally {
+      document.documentElement.removeAttribute("translate");
+    }
   });
 });

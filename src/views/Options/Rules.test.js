@@ -1263,6 +1263,55 @@ describe("Options Rules drafts", () => {
     await act(async () => getButtonByText(view.container, "cancel").click());
     expect(unloadIsBlocked()).toBe(false);
   });
+
+  test("loads the built-in ignore default, saves a site override, and restores inheritance", async () => {
+    const globalField = view.container.querySelector(
+      '[name="builtinIgnoreSelector"]'
+    );
+    expect(globalField.value).toContain("[translate='no']");
+    expect(globalField.value).toContain("script");
+    expect(view.container.textContent).toContain("builtin_ignore_selector");
+    expect(view.container.textContent).toContain(
+      "builtin_ignore_selector_helper"
+    );
+
+    await openPersonalTab(view);
+    await act(async () =>
+      view.container.querySelector(".MuiAccordionSummary-root").click()
+    );
+    const personalField = view.container.querySelector(
+      '[name="builtinIgnoreSelector"]'
+    );
+    expect(personalField.value).toBe("");
+    changeField(view.container, "builtinIgnoreSelector", "-[translate='no']");
+    await act(async () => getButtonByText(view.container, "save").click());
+    expect(mockPutRule).toHaveBeenCalledWith(
+      "example.com",
+      expect.objectContaining({ builtinIgnoreSelector: "-[translate='no']" })
+    );
+
+    ruleList = ruleList.map((rule) =>
+      rule.pattern === "example.com"
+        ? { ...rule, builtinIgnoreSelector: "-[translate='no']" }
+        : rule
+    );
+    view.rerender();
+    expect(
+      view.container.querySelector('[name="builtinIgnoreSelector"]').value
+    ).toBe("-[translate='no']");
+
+    await act(async () =>
+      getButtonByText(view.container, "restore_default").click()
+    );
+    expect(
+      view.container.querySelector('[name="builtinIgnoreSelector"]').value
+    ).toBe("");
+    await act(async () => getButtonByText(view.container, "save").click());
+    expect(mockPutRule).toHaveBeenLastCalledWith(
+      "example.com",
+      expect.objectContaining({ builtinIgnoreSelector: "" })
+    );
+  });
 });
 
 describe("Options Rules personal tab", () => {

@@ -59,6 +59,12 @@ export const DEFAULT_SELECTOR =
 // 默认被忽略、不参与翻译的选择器：包含按钮、页脚、导航栏、代码块、矢量图以及带“logo”属性的元素
 export const DEFAULT_IGNORE_SELECTOR =
   "button, footer, pre, mark, nav, svg, img[src*='.svg'], [class*='logo'] svg, [id*='logo'] svg";
+// 自动扫描时默认跳过的页面内容。KISS 自己的界面不在此列，且不能通过本字段关闭。
+export const DEFAULT_BUILTIN_IGNORE_SELECTOR = `address, area, audio, br, canvas,
+  data, datalist, embed, head, iframe, input, noscript, map,
+  object, option, param, picture, progress,
+  select, script, style, svg, track, textarea, template,
+  video, wbr, .notranslate, [contenteditable='true'], [translate='no']`;
 // 默认保留原样、不破坏内部结构的特殊行内元素选择器（如行内代码、公式等）
 export const DEFAULT_KEEP_SELECTOR = `code, cite, math, .math, a:has(code)`;
 
@@ -110,6 +116,7 @@ export const DEFAULT_RULE = {
   isPlainText: GLOBAL_KEY, // 是否启用 <pre> 纯文本翻译模式
   rootsSelector: "", // 限制翻译仅在特定的根节点容器内进行
   ignoreSelector: "", // 额外指定不进行翻译的 CSS 屏蔽选择器
+  builtinIgnoreSelector: "", // 内置忽略选择器，空值继承上一级规则
   splitParagraph: GLOBAL_KEY, // 拆分长段落的策略
   splitLength: 0, // 段落切分触发字符长度阈值
   highlightWords: GLOBAL_KEY, // 生词高亮的触发时机
@@ -162,6 +169,7 @@ export const GLOBLA_RULE = {
   isPlainText: "false", // 默认关闭 <pre> 纯文本翻译模式
   rootsSelector: "body",
   ignoreSelector: DEFAULT_IGNORE_SELECTOR,
+  builtinIgnoreSelector: DEFAULT_BUILTIN_IGNORE_SELECTOR,
   splitParagraph: OPT_SPLIT_PARAGRAPH_DISABLE,
   splitLength: 100,
   highlightWords: OPT_HIGHLIGHT_WORDS_DISABLE,

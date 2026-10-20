@@ -9,6 +9,7 @@ import {
   OPT_LANGS_FROM,
   OPT_LANGS_TO,
   DEFAULT_RULE,
+  DEFAULT_BUILTIN_IGNORE_SELECTOR,
   GLOBLA_RULE,
   STOKEY_RULES,
   OPT_SPLIT_PARAGRAPH_ALL,
@@ -139,6 +140,7 @@ export const mergeRules = (baseRule, overrideRule) => {
     "blockSelector",
     "rootsSelector",
     "ignoreSelector",
+    "builtinIgnoreSelector",
   ].forEach((key) => {
     merged[key] = mergeSelectors(baseRule[key] || "", overrideRule[key] || "");
   });
@@ -217,6 +219,10 @@ export const deriveRuleContext = (
     ...GLOBLA_RULE,
     ...(personalRules.find((r) => r.pattern === GLOBAL_KEY) || {}),
   };
+  globalRule.builtinIgnoreSelector = mergeSelectors(
+    DEFAULT_BUILTIN_IGNORE_SELECTOR,
+    globalRule.builtinIgnoreSelector
+  );
   // Find the active personal rule, excluding the global rule.
   // The visual editor can keep editing a renamed rule even when its new
   // pattern no longer matches the page used to select elements.
@@ -334,6 +340,7 @@ export const checkRules = (rules) => {
         blockSelector,
         rootsSelector,
         ignoreSelector,
+        builtinIgnoreSelector,
         terms,
         aiTerms,
         termsStyle,
@@ -377,6 +384,12 @@ export const checkRules = (rules) => {
         blockSelector: type(blockSelector) === "string" ? blockSelector : "",
         rootsSelector: type(rootsSelector) === "string" ? rootsSelector : "",
         ignoreSelector: type(ignoreSelector) === "string" ? ignoreSelector : "",
+        builtinIgnoreSelector:
+          type(builtinIgnoreSelector) === "string"
+            ? builtinIgnoreSelector
+            : pattern.trim() === GLOBAL_KEY
+              ? GLOBLA_RULE.builtinIgnoreSelector
+              : "",
         terms: type(terms) === "string" ? terms : "",
         aiTerms: type(aiTerms) === "string" ? aiTerms : "",
         termsStyle: type(termsStyle) === "string" ? termsStyle : "",
@@ -474,6 +487,7 @@ const applySavedRule = (rules, curRule) => {
         blockSelector: rule.blockSelector,
         rootsSelector: rule.rootsSelector,
         ignoreSelector: rule.ignoreSelector,
+        builtinIgnoreSelector: rule.builtinIgnoreSelector,
       }
     : curRule;
 

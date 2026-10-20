@@ -1,7 +1,12 @@
-import { checkRules, matchRule, saveRule } from "./rules";
+import { checkRules, matchRule, mergeRules, saveRule } from "./rules";
 import { getDisabledSubRules, getRulesWithDefault, saveEdit } from "./storage";
 import { loadOrFetchSubRules } from "./subRules";
-import { GLOBLA_RULE } from "../config/rules";
+import { kissLog } from "./log";
+import {
+  DEFAULT_BUILTIN_IGNORE_SELECTOR,
+  DEFAULT_RULE,
+  GLOBLA_RULE,
+} from "../config/rules";
 import { OPT_TRANS_MICROSOFT, OPT_TRANS_TENCENT } from "../config/api";
 import { DEFAULT_API_SETTING } from "../config";
 
@@ -556,5 +561,205 @@ describe("rules terms integration（规则链路：原始规则 → 合并 → T
     expect(requestedText).toBe("[[1]] only");
     const inner = document.querySelector(`.${Translator.KISS_CLASS.inner}`);
     expect(inner.textContent).toBe("接口 only");
+  });
+});
+
+const selectorTokens = (value) => value.split(",").map((item) => item.trim());
+
+describe("built-in ignore selector overrides", () => {
+  const setting = { injectRules: false, subrulesList: [] };
+  const subSetting = {
+    injectRules: true,
+    subrulesList: [{ url: "https://rules.example/main.json", selected: true }],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getDisabledSubRules.mockResolvedValue([]);
+    loadOrFetchSubRules.mockResolvedValue([]);
+    saveEdit.mockImplementation(async (_key, update) => ({
+      value: update(await getRulesWithDefault()),
+      changed: true,
+    }));
+  });
+
+  test("merges blank inheritance, replacement, patches, and an explicit empty list", () => {
+    expect(DEFAULT_RULE.builtinIgnoreSelector).toBe("");
+    expect(GLOBLA_RULE.builtinIgnoreSelector).toBe(
+      DEFAULT_BUILTIN_IGNORE_SELECTOR
+    );
+
+    expect(
+      mergeRules(GLOBLA_RULE, { builtinIgnoreSelector: "" }).builtinIgnoreSelector
+    ).toBe(DEFAULT_BUILTIN_IGNORE_SELECTOR);
+    expect(
+      mergeRules(GLOBLA_RULE, { builtinIgnoreSelector: "code, pre" })
+        .builtinIgnoreSelector
+    ).toBe("code, pre");
+    const added = mergeRules(GLOBLA_RULE, {
+      builtinIgnoreSelector: "+.extra",
+    }).builtinIgnoreSelector;
+    expect(selectorTokens(added)).toEqual(
+      expect.arrayContaining([".extra", "[translate='no']", "script"])
+    );
+    const removed = mergeRules(GLOBLA_RULE, {
+      builtinIgnoreSelector: "-[translate='no']",
+    }).builtinIgnoreSelector;
+    const removedTokens = selectorTokens(removed);
+    expect(removedTokens).not.toContain("[translate='no']");
+    expect(removedTokens).toEqual(
+      expect.arrayContaining(["script", "style", "input", ".notranslate"])
+    );
+    expect(
+      mergeRules(GLOBLA_RULE, { builtinIgnoreSelector: ":not(*)" })
+        .builtinIgnoreSelector
+    ).toBe(":not(*)");
+    expect(
+      mergeRules(GLOBLA_RULE, { builtinIgnoreSelector: "[[[" })
+        .builtinIgnoreSelector
+    ).toBe("[[[");
+    expect(kissLog).toHaveBeenCalledWith(
+      "invalid selector list",
+      expect.anything()
+    );
+  });
+
+  test.each(["-[translate='no']", "", "   "])(
+    "resolves global selector inheritance before subscription and personal patches (%p)",
+    async (globalSelector) => {
+      getRulesWithDefault.mockResolvedValue([
+        { pattern: "*", builtinIgnoreSelector: globalSelector },
+        { pattern: "grok.com", builtinIgnoreSelector: "+.personal" },
+      ]);
+      loadOrFetchSubRules.mockResolvedValue([
+        { pattern: "grok.com", builtinIgnoreSelector: "+.subscription" },
+      ]);
+
+      const global = await matchRule("https://untouched.example", setting);
+      const site = await matchRule("https://grok.com/chat", subSetting);
+      const expected = selectorTokens(DEFAULT_BUILTIN_IGNORE_SELECTOR).filter(
+        (selector) =>
+          globalSelector.trim() === "" || selector !== "[translate='no']"
+      );
+      expect(selectorTokens(global.builtinIgnoreSelector)).toEqual(expected);
+      expect(selectorTokens(site.builtinIgnoreSelector)).toEqual([
+        ...expected,
+        ".subscription",
+        ".personal",
+      ]);
+    }
+  );
+
+  test("keeps legacy rules on the default list and limits a site removal to that site", async () => {
+    getRulesWithDefault.mockResolvedValue([
+      { pattern: "*", selector: "p" },
+      { pattern: "example.com", selector: "article" },
+    ]);
+    loadOrFetchSubRules.mockResolvedValue([
+      { pattern: "news.example", selector: ".sub" },
+    ]);
+
+    const legacyGlobal = await matchRule("https://untouched.example", setting);
+    const legacyPersonal = await matchRule(
+      "https://example.com/post",
+      setting
+    );
+    const legacySub = await matchRule("https://news.example/item", subSetting);
+    expect(legacyGlobal.builtinIgnoreSelector).toBe(
+      DEFAULT_BUILTIN_IGNORE_SELECTOR
+    );
+    expect(legacyPersonal.builtinIgnoreSelector).toBe(
+      DEFAULT_BUILTIN_IGNORE_SELECTOR
+    );
+    expect(legacyPersonal.selector).toBe("article");
+    expect(legacySub.builtinIgnoreSelector).toBe(
+      DEFAULT_BUILTIN_IGNORE_SELECTOR
+    );
+
+    getRulesWithDefault.mockResolvedValue([
+      { pattern: "*", selector: "p" },
+      { pattern: "example.com", selector: "article" },
+      {
+        pattern: "grok.com",
+        builtinIgnoreSelector: "-[translate='no']",
+      },
+    ]);
+    loadOrFetchSubRules.mockResolvedValue([
+      {
+        pattern: "grok.com",
+        builtinIgnoreSelector: "footer, nav",
+      },
+    ]);
+    const grok = await matchRule("https://grok.com/chat", setting);
+    const other = await matchRule("https://example.com/post", setting);
+    expect(grok.autoScan).toBe("true");
+    expect(selectorTokens(grok.builtinIgnoreSelector)).not.toContain(
+      "[translate='no']"
+    );
+    expect(selectorTokens(grok.builtinIgnoreSelector)).toEqual(
+      expect.arrayContaining(["script", "style", "input", ".notranslate"])
+    );
+    expect(other.builtinIgnoreSelector).toBe(DEFAULT_BUILTIN_IGNORE_SELECTOR);
+
+    getRulesWithDefault.mockResolvedValue([
+      { pattern: "*", selector: "p" },
+      { pattern: "grok.com", builtinIgnoreSelector: "code" },
+    ]);
+    const personalWins = await matchRule("https://grok.com/chat", subSetting);
+    expect(personalWins.builtinIgnoreSelector).toBe("code");
+    const untouched = await matchRule("https://example.com/post", subSetting);
+    expect(untouched.builtinIgnoreSelector).toBe(
+      DEFAULT_BUILTIN_IGNORE_SELECTOR
+    );
+  });
+
+  test("preserves an override through checkRules, popup save, and matchRule", async () => {
+    const normalized = checkRules([
+      { pattern: "*", selector: "h1" },
+      { pattern: "example.com" },
+      {
+        pattern: "grok.com",
+        selector: "article",
+        builtinIgnoreSelector: "-[translate='no']",
+      },
+      { pattern: "bad.example", builtinIgnoreSelector: 1 },
+    ]);
+    expect(
+      normalized.find((rule) => rule.pattern === "*").builtinIgnoreSelector
+    ).toBe(DEFAULT_BUILTIN_IGNORE_SELECTOR);
+    expect(
+      normalized.find((rule) => rule.pattern === "example.com")
+        .builtinIgnoreSelector
+    ).toBe("");
+    expect(
+      normalized.find((rule) => rule.pattern === "grok.com")
+        .builtinIgnoreSelector
+    ).toBe("-[translate='no']");
+    expect(
+      normalized.find((rule) => rule.pattern === "bad.example")
+        .builtinIgnoreSelector
+    ).toBe("");
+
+    getRulesWithDefault.mockResolvedValue(normalized);
+    await saveRule({ pattern: "grok.com", transOpen: "true" });
+    const saved = (await saveEdit.mock.results[0].value).value;
+    const grokSaved = saved.find((rule) => rule.pattern === "grok.com");
+    expect(grokSaved).toMatchObject({
+      pattern: "grok.com",
+      selector: "article",
+      builtinIgnoreSelector: "-[translate='no']",
+      transOpen: "true",
+    });
+
+    getRulesWithDefault.mockResolvedValue(saved);
+    const grok = await matchRule("https://grok.com/chat", setting);
+    const example = await matchRule("https://example.com/post", setting);
+    expect(selectorTokens(grok.builtinIgnoreSelector)).not.toContain(
+      "[translate='no']"
+    );
+    expect(selectorTokens(grok.builtinIgnoreSelector)).toEqual(
+      expect.arrayContaining(["script", "style", "input", ".notranslate"])
+    );
+    expect(example.builtinIgnoreSelector).toBe(DEFAULT_BUILTIN_IGNORE_SELECTOR);
   });
 });

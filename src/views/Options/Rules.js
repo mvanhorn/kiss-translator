@@ -259,6 +259,7 @@ function RuleFields({ rule, rules, setShow, setKeyword, draftId }) {
     blockSelector = "", // 自定义块级元素 CSS 选择器
     rootsSelector = "", // 翻译的根容器 CSS 选择器
     ignoreSelector = "", // 忽略不翻译的 CSS 选择器
+    builtinIgnoreSelector = "", // 内置忽略选择器，空值继承
     terms, // 专有名词对照表（普通）
     aiTerms, // AI 专有名词对照表
     termsStyle = "", // 专有名词样式
@@ -471,6 +472,16 @@ function RuleFields({ rule, rules, setShow, setKeyword, draftId }) {
           helperText={i18n("ignore_selector_helper")}
           name="ignoreSelector"
           value={ignoreSelector}
+          disabled={disabled}
+          onChange={handleChange}
+        />
+        {/* 自动扫描使用的内置忽略选择器，可用 +/- 继承或剔除 */}
+        <CodeField
+          size="small"
+          label={i18n("builtin_ignore_selector")}
+          helperText={i18n("builtin_ignore_selector_helper")}
+          name="builtinIgnoreSelector"
+          value={builtinIgnoreSelector}
           disabled={disabled}
           onChange={handleChange}
         />

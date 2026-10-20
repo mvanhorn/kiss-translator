@@ -5,6 +5,7 @@ import {
   APP_CONSTS,
   OPT_STYLE_FUZZY,
   GLOBLA_RULE,
+  DEFAULT_BUILTIN_IGNORE_SELECTOR,
   GLOBAL_KEY,
   DEFAULT_SETTING,
   // DEFAULT_MOUSEHOVER_KEY,
@@ -345,11 +346,8 @@ export class Translator {
   #${APP_CONSTS.boxID}, .${APP_CONSTS.boxID}_warpper,
   #${APP_CONSTS.popupID}, .${APP_CONSTS.popupID}_warpper, #kiss-rule-editor, #kiss-rule-highlights`;
 
-  static BUILTIN_IGNORE_SELECTOR = `address, area, audio, br, canvas,
-  data, datalist, embed, head, iframe, input, noscript, map,
-  object, option, param, picture, progress,
-  select, script, style, svg, track, textarea, template,
-  video, wbr, .notranslate, [contenteditable='true'], [translate='no']`;
+  // 与规则配置中的默认列表保持同一份文本，供直接构造的旧规则回退。
+  static BUILTIN_IGNORE_SELECTOR = DEFAULT_BUILTIN_IGNORE_SELECTOR;
 
   #setting; // 设置选项
   #rule; // 规则
@@ -712,7 +710,9 @@ export class Translator {
 
     const selectors = [Translator.KISS_IGNORE_SELECTOR];
     if (rule.autoScan !== "false") {
-      selectors.push(Translator.BUILTIN_IGNORE_SELECTOR);
+      // 空白继承内置列表；:not(*) 才是显式的空列表。KISS 界面始终单独排除。
+      const builtin = rule.builtinIgnoreSelector?.trim();
+      selectors.push(builtin || Translator.BUILTIN_IGNORE_SELECTOR);
     }
 
     const userSelector = rule.ignoreSelector?.trim();
@@ -5382,6 +5382,7 @@ overflow-wrap: anywhere !important;`;
           key === "autoScan" ||
           key === "selector" ||
           key === "ignoreSelector" ||
+          key === "builtinIgnoreSelector" ||
           key === "keepSelector" ||
           key === "blockSelector" ||
           key === "hasShadowroot" ||
